@@ -53,3 +53,4 @@ experiments/pretrained_models/*.pth
 /tmp/
 *.tmp
 nohup.out
+FB.ApiCore/.venv/*
