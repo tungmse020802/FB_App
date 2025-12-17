@@ -16,11 +16,15 @@ class HybridSkinRetouch:
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             static_image_mode=True,
             max_num_faces=1,
-            refine_landmarks=True,
+            # Tắt refine landmarks để lấy 468 điểm gốc, giúp convex hull ổn định hơn
+            refine_landmarks=False, 
         )
 
     def get_face_region_mask(self, img: np.ndarray) -> np.ndarray | None:
-        """Tạo mask vùng mặt bằng MediaPipe - LOẠI TRỪ mắt, môi, lông mi"""
+        """
+        Tạo mask vùng mặt - PHIÊN BẢN ỔN ĐỊNH CAO DÙNG CONVEX HULL
+        Bao phủ toàn bộ khuôn mặt, sau đó loại trừ các chi tiết.
+        """
         h, w = img.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
 
@@ -30,53 +34,76 @@ class HybridSkinRetouch:
 
         landmarks = results.multi_face_landmarks[0].landmark
 
-        # Vẽ toàn bộ khuôn mặt
-        face_oval = [
-            10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-            397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-            172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
-        ]
-        pts = np.array([(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in face_oval])
-        cv2.fillPoly(mask, [pts], 255)
+        # =================================================================
+        # BƯỚC 1: TẠO VÙNG BAO QUÁT TOÀN BỘ MẶT (CONVEX HULL)
+        # =================================================================
+        # Thay vì chọn điểm thủ công, lấy TẤT CẢ các điểm landmark
+        all_points = []
+        for lm in landmarks:
+            pt = (int(lm.x * w), int(lm.y * h))
+            all_points.append(pt)
+        
+        all_points_np = np.array(all_points, dtype=np.int32)
+        
+        # Tính Convex Hull: Tìm đường bao ngoài cùng chứa tất cả các điểm
+        # Cách này đảm bảo không bỏ sót má, trán.
+        hull = cv2.convexHull(all_points_np)
+        
+        # Tô đầy vùng convex hull
+        cv2.fillPoly(mask, [hull], 255)
 
-        # Tạo mask exclusion riêng để MỞ RỘNG vùng loại trừ
+        # =================================================================
+        # BƯỚC 2: CO NHỎ MASK ĐỂ BẢO VỆ VIỀN MẶT (Giữ nguyên từ lần trước)
+        # =================================================================
+        # Co mask vào trong để đảm bảo vùng rìa mặt là ảnh gốc 100%.
+        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        mask = cv2.erode(mask, erode_kernel, iterations=1)
+
+        # =================================================================
+        # BƯỚC 3: LOẠI TRỪ CÁC VÙNG NHẠY CẢM
+        # =================================================================
         exclude_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # LOẠI TRỪ mắt trái, mắt phải, môi - GIỮ NGUYÊN MÀU TỰ NHIÊN
         exclude_regions = [
-            # Mắt trái FULL (cả trên + dưới + lông mi)
-            [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
-             130, 25, 110, 24, 23, 22, 26, 112, 243],
-            # Mắt phải FULL (cả trên + dưới + lông mi)  
-            [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382,
-             359, 255, 339, 254, 253, 252, 256, 341, 463],
-            # Môi FULL (trên + dưới + viền ngoài)
-            [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146,
-             78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308],
-            # Lông mày trái MỞ RỘNG
+            # Mắt trái
+            [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 130, 25, 110, 24, 23, 22, 26, 112, 243],
+            # Mắt phải
+            [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382, 359, 255, 339, 254, 253, 252, 256, 341, 463],
+            # Môi
+            [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308],
+            # Lông mày trái
             [70, 63, 105, 66, 107, 55, 65, 52, 53, 46, 124, 35, 111, 117, 118, 119],
-            # Lông mày phải MỞ RỘNG
-            [300, 293, 334, 296, 336, 285, 295, 282, 283, 276, 353, 265, 340, 346, 347, 348]
+            # Lông mày phải
+            [300, 293, 334, 296, 336, 285, 295, 282, 283, 276, 353, 265, 340, 346, 347, 348],
+            # Vùng mũi (Sống mũi và cánh mũi)
+            [168, 193, 245, 114, 47, 115, 220, 4, 440, 344, 277, 343, 465, 417]
         ]
         
         for region in exclude_regions:
-            pts = np.array([(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in region])
-            cv2.fillPoly(exclude_mask, [pts], 255)
+            # Kiểm tra index để tránh lỗi out of bounds nếu refine_landmarks=False
+            valid_points = []
+            for i in region:
+                if i < len(landmarks):
+                    valid_points.append((int(landmarks[i].x * w), int(landmarks[i].y * h)))
+            if valid_points:
+                pts = np.array(valid_points)
+                cv2.fillPoly(exclude_mask, [pts], 255)
         
-        # MỞ RỘNG vùng exclusion để chắc chắn không xâm lấn
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        exclude_mask = cv2.dilate(exclude_mask, kernel, iterations=2)
-        
-        # Làm mềm biên exclusion
+        # Mở rộng vùng loại trừ bên trong (mắt/mũi/miệng) mạnh hơn một chút
+        kernel_exclude = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (18, 18)) # Tăng nhẹ từ 15 lên 18
+        exclude_mask = cv2.dilate(exclude_mask, kernel_exclude, iterations=2)
         exclude_mask = cv2.GaussianBlur(exclude_mask, (25, 25), 0)
         
         # Trừ vùng exclusion khỏi mask chính
         mask = cv2.subtract(mask, exclude_mask)
         
         # Làm mềm biên mask tổng thể
-        mask = cv2.GaussianBlur(mask, (31, 31), 0)
+        # Blur 21 là đủ để làm mềm vùng giao thoa mà không lan ra viền mặt đã được co lại
+        mask = cv2.GaussianBlur(mask, (21, 21), 0)
+        
         return mask
 
+    # ... (Giữ nguyên các phương thức get_ml_mask, frequency_separation_heal, run) ...
     def get_ml_mask(self, img: np.ndarray, face_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Phát hiện mụn chỉ trong vùng mặt"""
         small_img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)

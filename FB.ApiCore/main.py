@@ -37,6 +37,10 @@ def beautify_image(
         _, processed = ml_processor.run(img)
         if processed is None:
             raise HTTPException(status_code=422, detail="Processing failed")
+    else:
+        _, processed = ml_processor.run(img)
+        if processed is None:
+            raise HTTPException(status_code=422, detail="Processing failed")
 
     success, buffer = cv2.imencode(".jpg", processed)
     if not success:
